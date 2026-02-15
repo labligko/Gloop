@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() {
   runApp(const GloopApp());
@@ -254,14 +255,29 @@ class UserProfile {
 
 class Address {
   Address({
+    required this.id,
     required this.label,
-    required this.line1,
-    required this.line2,
+    required this.street,
+    required this.city,
+    required this.postalCode,
+    required this.phone,
+    this.note = '',
+    this.isPrimary = false,
   });
 
+  final String id;
   final String label;
-  final String line1;
-  final String line2;
+  final String street;
+  final String city;
+  final String postalCode;
+  final String phone;
+  final String note;
+
+  bool isPrimary;
+
+  // supaya bagian lain yang masih pakai line1/line2 tidak perlu banyak diubah
+  String get line1 => street;
+  String get line2 => '$city, $postalCode';
 }
 
 class NotificationSettings {
@@ -523,6 +539,75 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+    // ===== Address Logic =====
+
+  void selectAddressById(String id) {
+    final idx = addresses.indexWhere((a) => a.id == id);
+    if (idx < 0) return;
+    selectedAddressIndex = idx;
+    notifyListeners();
+  }
+
+  void setPrimaryAddress(String id) {
+    final idx = addresses.indexWhere((a) => a.id == id);
+    if (idx < 0) return;
+
+    for (final a in addresses) {
+      a.isPrimary = false;
+    }
+    addresses[idx].isPrimary = true;
+    selectedAddressIndex = idx;
+    notifyListeners();
+  }
+
+  void addAddress(Address address, {bool makePrimary = false}) {
+    // kalau list kosong, otomatis jadi utama
+    final shouldBePrimary = makePrimary || addresses.isEmpty || address.isPrimary;
+
+    if (shouldBePrimary) {
+      for (final a in addresses) {
+        a.isPrimary = false;
+      }
+      address.isPrimary = true;
+    }
+
+    // biar alamat terbaru muncul paling atas
+    addresses.insert(0, address);
+
+    // kalau dia primary, select dia
+    if (address.isPrimary) {
+      selectedAddressIndex = 0;
+    } else if (selectedAddressIndex >= addresses.length) {
+      selectedAddressIndex = 0;
+    }
+
+    notifyListeners();
+  }
+
+  void updateAddress(Address updated, {bool makePrimary = false}) {
+    final idx = addresses.indexWhere((a) => a.id == updated.id);
+    if (idx < 0) return;
+
+    final shouldBePrimary = makePrimary || updated.isPrimary;
+
+    if (shouldBePrimary) {
+      for (final a in addresses) {
+        a.isPrimary = false;
+      }
+      updated.isPrimary = true;
+    }
+
+    addresses[idx] = updated;
+
+    if (updated.isPrimary) {
+      selectedAddressIndex = idx;
+    } else if (selectedAddressIndex >= addresses.length) {
+      selectedAddressIndex = 0;
+    }
+
+    notifyListeners();
+  }
+
   String _generateRedeemCode(String title) {
     final letters = title.replaceAll(RegExp(r'[^A-Za-z]'), '').toUpperCase();
     final prefix = letters.length >= 2 ? letters.substring(0, 2) : 'RW';
@@ -545,9 +630,14 @@ class AppController extends ChangeNotifier {
 
     final addresses = [
       Address(
+        id: 'addr_1',
         label: 'Rumah',
-        line1: '123 Green Street, Eco District',
-        line2: 'Jakarta, 12345',
+        street: '123 Green Street, Eco District',
+        city: 'Jakarta',
+        postalCode: '12345',
+        phone: '+62 812 3456 7890',
+        note: '',
+        isPrimary: true,
       ),
     ];
 
@@ -2172,9 +2262,7 @@ class ProfileScreen extends StatelessWidget {
                       InkWell(
                         borderRadius: BorderRadius.circular(12),
                         onTap: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Pilih alamat (stub)')),
-                          );
+                          showAddressSheet(context, mode: AddressSheetMode.manage);
                         },
                         child: Container(
                           width: double.infinity,
@@ -2210,9 +2298,7 @@ class ProfileScreen extends StatelessWidget {
                         width: double.infinity,
                         child: OutlinedButton(
                           onPressed: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('${c.t('addNewAddress')} (stub)')),
-                            );
+                            showAddEditAddressSheet(context);
                           },
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppColors.text,
@@ -3046,18 +3132,21 @@ class _HelpSupportScreenState extends State<HelpSupportScreen> {
                           icon: Icons.mail_outline_rounded,
                           label: c.t('helpEmailLabel'),
                           value: 'support@gloop.id',
+                          copyable: true,
                         ),
                         const SizedBox(height: 10),
                         _ContactInfoTile(
                           icon: Icons.call_outlined,
                           label: c.t('helpPhoneLabel'),
                           value: '+62 21 1234 5678',
+                          copyable: true,
                         ),
                         const SizedBox(height: 10),
                         _ContactInfoTile(
                           icon: Icons.access_time_rounded,
                           label: c.t('helpHoursLabel'),
                           value: c.t('helpHoursValue'),
+                          copyable: false, // jam opsional mau dicopy atau nggak
                         ),
                       ],
                     ),
@@ -3202,44 +3291,73 @@ class _ContactInfoTile extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.value,
+    this.copyable = false,
   });
 
   final IconData icon;
   final String label;
   final String value;
+  final bool copyable;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.fieldBg,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.border),
+    final c = AppScope.of(context);
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: copyable
+          ? () async {
+              await Clipboard.setData(ClipboardData(text: value));
+
+              ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+              final msg = c.lang == AppLang.en
+                  ? 'Copied to clipboard'
+                  : 'Disalin ke clipboard';
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('$msg: $value')),
+              );
+            }
+          : null,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.fieldBg,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Icon(icon, color: AppColors.primary),
             ),
-            child: Icon(icon, color: AppColors.primary),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700, fontSize: 12)),
-                const SizedBox(height: 2),
-                Text(value, style: const TextStyle(fontWeight: FontWeight.w900)),
-              ],
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: AppColors.muted,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(value, style: const TextStyle(fontWeight: FontWeight.w900)),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -3477,9 +3595,7 @@ class _SchedulePickupScreenState extends State<SchedulePickupScreen> {
                         const SizedBox(height: 10),
                         InkWell(
                           onTap: () {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Ubah alamat (stub)')),
-                            );
+                            showAddressSheet(context, mode: AddressSheetMode.pick);
                           },
                           child: const Text(
                             'Ubah alamat',
@@ -4418,5 +4534,622 @@ class LogoutConfirmDialog extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+enum AddressSheetMode { manage, pick }
+
+Future<void> showAddressSheet(
+  BuildContext context, {
+  required AddressSheetMode mode,
+}) async {
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _AddressListSheet(mode: mode),
+  );
+}
+
+Future<void> showAddEditAddressSheet(
+  BuildContext context, {
+  Address? existing,
+}) async {
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _AddEditAddressSheet(existing: existing),
+  );
+}
+
+class _AddressListSheet extends StatelessWidget {
+  const _AddressListSheet({required this.mode});
+
+  final AddressSheetMode mode;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppScope.of(context);
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.only(top: 60),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _SheetHeader(
+                icon: Icons.location_on_outlined,
+                title: mode == AddressSheetMode.pick ? 'Pilih Alamat Penjemputan' : 'Alamat Penjemputan',
+                onClose: () => Navigator.pop(context),
+              ),
+              const SizedBox(height: 10),
+
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: c.addresses.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) {
+                    final a = c.addresses[i];
+                    final isSelected = c.selectedAddressIndex == i;
+                    final isPrimary = a.isPrimary;
+
+                    return _AddressCard(
+                      address: a,
+                      highlighted: isPrimary,
+                      showChooseButton: mode == AddressSheetMode.pick,
+                      onTapCard: mode == AddressSheetMode.manage
+                          ? () {
+                              // di mode manage: tap kartu = jadikan utama + select
+                              c.setPrimaryAddress(a.id);
+                              Navigator.pop(context);
+                            }
+                          : null,
+                      onChoose: mode == AddressSheetMode.pick
+                          ? () {
+                              c.selectAddressById(a.id);
+                              Navigator.pop(context);
+                            }
+                          : null,
+                      onEdit: () async {
+                        await showAddEditAddressSheet(context, existing: a);
+                      },
+                    );
+                  },
+                ),
+              ),
+
+              const SizedBox(height: 12),
+
+              _DashedAddButton(
+                text: '+ Tambah Alamat Baru',
+                onTap: () async {
+                  await showAddEditAddressSheet(context);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddEditAddressSheet extends StatefulWidget {
+  const _AddEditAddressSheet({this.existing});
+
+  final Address? existing;
+
+  @override
+  State<_AddEditAddressSheet> createState() => _AddEditAddressSheetState();
+}
+
+class _AddEditAddressSheetState extends State<_AddEditAddressSheet> {
+  late final TextEditingController label;
+  late final TextEditingController street;
+  late final TextEditingController postal;
+  late final TextEditingController phone;
+  late final TextEditingController note;
+
+  String city = 'Jakarta';
+  bool makePrimary = false;
+
+  final _cities = const ['Jakarta', 'Bandung', 'Surabaya', 'Medan', 'Denpasar'];
+
+  @override
+  void initState() {
+    super.initState();
+    final ex = widget.existing;
+
+    label = TextEditingController(text: ex?.label ?? '');
+    street = TextEditingController(text: ex?.street ?? '');
+    postal = TextEditingController(text: ex?.postalCode ?? '');
+    phone = TextEditingController(text: ex?.phone ?? '+62 ');
+    note = TextEditingController(text: ex?.note ?? '');
+
+    city = ex?.city ?? 'Jakarta';
+    makePrimary = ex?.isPrimary ?? false;
+  }
+
+  @override
+  void dispose() {
+    label.dispose();
+    street.dispose();
+    postal.dispose();
+    phone.dispose();
+    note.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final c = AppScope.of(context);
+
+    final l = label.text.trim();
+    final s = street.text.trim();
+    final p = postal.text.trim();
+    final ph = phone.text.trim();
+
+    if (l.isEmpty || s.isEmpty || city.isEmpty || p.isEmpty || ph.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Lengkapi field yang wajib diisi (*)')),
+      );
+      return;
+    }
+
+    final id = widget.existing?.id ?? 'addr_${DateTime.now().millisecondsSinceEpoch}';
+    final updated = Address(
+      id: id,
+      label: l,
+      street: s,
+      city: city,
+      postalCode: p,
+      phone: ph,
+      note: note.text.trim(),
+      isPrimary: makePrimary,
+    );
+
+    if (widget.existing == null) {
+      c.addAddress(updated, makePrimary: makePrimary);
+    } else {
+      c.updateAddress(updated, makePrimary: makePrimary);
+    }
+
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.existing != null;
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Container(
+          margin: const EdgeInsets.only(top: 40),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _SheetHeader(
+                  icon: Icons.location_on_outlined,
+                  title: isEdit ? 'Edit Alamat' : 'Tambah Alamat Baru',
+                  onClose: () => Navigator.pop(context),
+                ),
+                const SizedBox(height: 10),
+
+                _FieldLabelRow('Label Alamat *'),
+                const SizedBox(height: 6),
+                _SheetTextField(controller: label, hint: 'Rumah, Kantor, dll'),
+                const SizedBox(height: 10),
+
+                _FieldLabelRow('Alamat Lengkap *'),
+                const SizedBox(height: 6),
+                _SheetTextField(controller: street, hint: 'Masukkan alamat lengkap', minLines: 2, maxLines: 3),
+                const SizedBox(height: 10),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const _FieldLabelRow('Kota *'),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<String>(
+                            value: city,
+                            items: _cities
+                                .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                                .toList(),
+                            onChanged: (v) => setState(() => city = v ?? city),
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: AppColors.fieldBg,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide.none,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const _FieldLabelRow('Kode Pos *'),
+                          const SizedBox(height: 6),
+                          _SheetTextField(
+                            controller: postal,
+                            hint: '12345',
+                            keyboardType: TextInputType.number,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
+                _FieldLabelRow('Nomor Telepon *'),
+                const SizedBox(height: 6),
+                _SheetTextField(
+                  controller: phone,
+                  hint: '+62 812 ....',
+                  keyboardType: TextInputType.phone,
+                ),
+                const SizedBox(height: 10),
+
+                const _FieldLabelRow('Catatan (Opsional)'),
+                const SizedBox(height: 6),
+                _SheetTextField(
+                  controller: note,
+                  hint: 'Patokan, warna rumah, dll.',
+                  minLines: 2,
+                  maxLines: 3,
+                ),
+                const SizedBox(height: 10),
+
+                Row(
+                  children: [
+                    Checkbox(
+                      value: makePrimary,
+                      onChanged: (v) => setState(() => makePrimary = v ?? false),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                      activeColor: Colors.black87,
+                      checkColor: Colors.white,
+                      side: const BorderSide(color: AppColors.border),
+                    ),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                      child: Text(
+                        'Jadikan alamat utama',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: ElevatedButton(
+                    onPressed: _save,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('Simpan Alamat', style: TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.text,
+                      side: const BorderSide(color: AppColors.border),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('Batal', style: TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AddressCard extends StatelessWidget {
+  const _AddressCard({
+    required this.address,
+    required this.highlighted,
+    required this.showChooseButton,
+    this.onTapCard,
+    required this.onEdit,
+    this.onChoose,
+  });
+
+  final Address address;
+  final bool highlighted; // biasanya primary
+  final bool showChooseButton; // mode pick
+  final VoidCallback? onTapCard;
+  final VoidCallback onEdit;
+  final VoidCallback? onChoose;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = highlighted ? AppColors.softGreen : Colors.white;
+    final border = highlighted ? const Color(0xFFCDEEDB) : AppColors.border;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTapCard,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(address.label, style: const TextStyle(fontWeight: FontWeight.w900)),
+                const SizedBox(width: 8),
+                if (address.isPrimary)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Text(
+                      'Utama',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
+                    ),
+                  ),
+                const Spacer(),
+                InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: onEdit,
+                  child: const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Icon(Icons.edit_outlined, size: 18, color: AppColors.muted),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(address.street, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text('${address.city}, ${address.postalCode}',
+                style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(address.phone, style: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700)),
+
+            if (showChooseButton) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 40,
+                child: ElevatedButton(
+                  onPressed: onChoose,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: const Text('Pilih', style: TextStyle(fontWeight: FontWeight.w900)),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SheetHeader extends StatelessWidget {
+  const _SheetHeader({
+    required this.icon,
+    required this.title,
+    required this.onClose,
+  });
+
+  final IconData icon;
+  final String title;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: AppColors.primary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+          ),
+        ),
+        InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onClose,
+          child: const Padding(
+            padding: EdgeInsets.all(6),
+            child: Icon(Icons.close_rounded),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _FieldLabelRow extends StatelessWidget {
+  const _FieldLabelRow(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(text, style: const TextStyle(fontWeight: FontWeight.w900)),
+    );
+  }
+}
+
+class _SheetTextField extends StatelessWidget {
+  const _SheetTextField({
+    required this.controller,
+    required this.hint,
+    this.keyboardType,
+    this.minLines = 1,
+    this.maxLines = 1,
+  });
+
+  final TextEditingController controller;
+  final String hint;
+  final TextInputType? keyboardType;
+  final int minLines;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      minLines: minLines,
+      maxLines: maxLines,
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: AppColors.muted, fontWeight: FontWeight.w700),
+        filled: true,
+        fillColor: AppColors.fieldBg,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      ),
+    );
+  }
+}
+
+// ===== Dashed Add Button (tanpa package) =====
+
+class _DashedAddButton extends StatelessWidget {
+  const _DashedAddButton({
+    required this.text,
+    required this.onTap,
+  });
+
+  final String text;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: CustomPaint(
+        painter: _DashedRRectPainter(
+          color: AppColors.primary,
+          strokeWidth: 1.4,
+          dash: 6,
+          gap: 5,
+          radius: 14,
+        ),
+        child: Container(
+          height: 48,
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.add_rounded, color: AppColors.primary),
+              const SizedBox(width: 8),
+              Text(text, style: const TextStyle(fontWeight: FontWeight.w900)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DashedRRectPainter extends CustomPainter {
+  _DashedRRectPainter({
+    required this.color,
+    required this.strokeWidth,
+    required this.dash,
+    required this.gap,
+    required this.radius,
+  });
+
+  final Color color;
+  final double strokeWidth;
+  final double dash;
+  final double gap;
+  final double radius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
+    final path = Path()..addRRect(rrect);
+
+    final paint = Paint()
+      ..color = color.withOpacity(0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth;
+
+    for (final metric in path.computeMetrics()) {
+      double distance = 0;
+      while (distance < metric.length) {
+        final len = math.min(dash, metric.length - distance);
+        final extract = metric.extractPath(distance, distance + len);
+        canvas.drawPath(extract, paint);
+        distance += dash + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DashedRRectPainter old) {
+    return old.color != color ||
+        old.strokeWidth != strokeWidth ||
+        old.dash != dash ||
+        old.gap != gap ||
+        old.radius != radius;
   }
 }
